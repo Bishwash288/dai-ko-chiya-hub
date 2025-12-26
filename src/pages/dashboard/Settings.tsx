@@ -6,7 +6,6 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
-import { Badge } from '@/components/ui/badge';
 import { 
   Store, 
   Image, 
@@ -16,13 +15,16 @@ import {
   Copy, 
   Upload,
   Play,
-  CheckCircle2
+  CheckCircle2,
+  Loader2
 } from 'lucide-react';
 import { toast } from 'sonner';
 
 const Settings = () => {
-  const { shopSettings, setShopSettings } = useApp();
+  const { shopSettings, currentShop, updateShopSettings, uploadShopLogo } = useApp();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   
   const [formData, setFormData] = useState({
     shopName: shopSettings.shopName,
@@ -31,16 +33,22 @@ const Settings = () => {
   });
 
   const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
-  const shopUrl = `${baseUrl}/menu`;
+  const shopUrl = currentShop ? `${baseUrl}/shop/${currentShop.slug}/menu` : `${baseUrl}/menu`;
 
-  const handleSave = () => {
-    setShopSettings(prev => ({
-      ...prev,
-      shopName: formData.shopName,
+  const handleSave = async () => {
+    setIsSaving(true);
+    const success = await updateShopSettings({
+      name: formData.shopName,
       description: formData.description,
       numberOfTables: formData.numberOfTables,
-    }));
-    toast.success('Settings saved successfully!');
+    });
+    setIsSaving(false);
+    
+    if (success) {
+      toast.success('Settings saved successfully!');
+    } else {
+      toast.error('Failed to save settings');
+    }
   };
 
   const copyShopUrl = () => {
@@ -77,10 +85,10 @@ const Settings = () => {
     const permission = await Notification.requestPermission();
     
     if (permission === 'granted') {
-      setShopSettings(prev => ({ ...prev, browserNotifications: true }));
-      new Notification('Dai Ko Chiya', {
+      await updateShopSettings({ browserNotifications: true });
+      new Notification(shopSettings.shopName, {
         body: 'Browser notifications enabled!',
-        icon: '/favicon.ico',
+        icon: shopSettings.logoUrl || '/favicon.ico',
       });
       toast.success('Browser notifications enabled!');
     } else {
@@ -88,7 +96,7 @@ const Settings = () => {
     }
   };
 
-  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -97,13 +105,23 @@ const Settings = () => {
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const result = e.target?.result as string;
-      setShopSettings(prev => ({ ...prev, logoUrl: result }));
+    setIsUploading(true);
+    const url = await uploadShopLogo(file);
+    setIsUploading(false);
+    
+    if (url) {
       toast.success('Logo uploaded successfully!');
-    };
-    reader.readAsDataURL(file);
+    } else {
+      toast.error('Failed to upload logo');
+    }
+  };
+
+  const handleToggleOpen = async (checked: boolean) => {
+    await updateShopSettings({ isOpen: checked });
+  };
+
+  const handleToggleSoundAlerts = async (checked: boolean) => {
+    await updateShopSettings({ soundAlerts: checked });
   };
 
   return (
@@ -132,7 +150,7 @@ const Settings = () => {
               </div>
               <Switch
                 checked={shopSettings.isOpen}
-                onCheckedChange={(checked) => setShopSettings(prev => ({ ...prev, isOpen: checked }))}
+                onCheckedChange={handleToggleOpen}
               />
             </div>
           </CardContent>
@@ -187,8 +205,13 @@ const Settings = () => {
             <Button 
               onClick={handleSave}
               className="w-full bg-primary hover:bg-primary/90 text-primary-foreground"
+              disabled={isSaving}
             >
-              <CheckCircle2 className="w-4 h-4 mr-2" />
+              {isSaving ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <CheckCircle2 className="w-4 h-4 mr-2" />
+              )}
               Save Changes
             </Button>
           </CardContent>
@@ -208,12 +231,12 @@ const Settings = () => {
             </div>
 
             <div className="mt-4 flex items-center gap-4">
-              <div className="w-20 h-20 rounded-lg border-2 border-dashed border-border flex items-center justify-center bg-secondary/30">
+              <div className="w-20 h-20 rounded-lg border-2 border-dashed border-border flex items-center justify-center bg-secondary/30 overflow-hidden">
                 {shopSettings.logoUrl ? (
                   <img 
                     src={shopSettings.logoUrl} 
                     alt="Shop logo" 
-                    className="w-full h-full object-cover rounded-lg"
+                    className="w-full h-full object-cover"
                   />
                 ) : (
                   <Image className="w-8 h-8 text-muted-foreground" />
@@ -229,8 +252,13 @@ const Settings = () => {
               <Button 
                 variant="outline"
                 onClick={() => fileInputRef.current?.click()}
+                disabled={isUploading}
               >
-                <Upload className="w-4 h-4 mr-2" />
+                {isUploading ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Upload className="w-4 h-4 mr-2" />
+                )}
                 Upload
               </Button>
             </div>
@@ -300,7 +328,7 @@ const Settings = () => {
                   </Button>
                   <Switch
                     checked={shopSettings.soundAlerts}
-                    onCheckedChange={(checked) => setShopSettings(prev => ({ ...prev, soundAlerts: checked }))}
+                    onCheckedChange={handleToggleSoundAlerts}
                   />
                 </div>
               </div>
@@ -332,7 +360,7 @@ const Settings = () => {
                       if (checked) {
                         requestNotificationPermission();
                       } else {
-                        setShopSettings(prev => ({ ...prev, browserNotifications: false }));
+                        updateShopSettings({ browserNotifications: false });
                       }
                     }}
                   />

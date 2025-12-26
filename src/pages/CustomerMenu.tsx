@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, useParams } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
 import MenuCard from '@/components/customer/MenuCard';
 import CartItemCard from '@/components/customer/CartItemCard';
@@ -11,28 +11,97 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ShoppingCart, Coffee, Store, ChevronRight, Loader2 } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { ShoppingCart, Coffee, Store, ChevronRight, Loader2, Lock, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 
 const CustomerMenu = () => {
+  const { shopSlug } = useParams();
   const [searchParams] = useSearchParams();
   const tableFromUrl = searchParams.get('table');
   
   const { 
     menuItems, 
     loadingMenu,
+    loadingShop,
     cart, 
     createOrder, 
     currentOrder, 
     shopSettings,
+    currentShop,
+    loadShopBySlug,
+    tableSession,
+    setTableSession,
+    clearTableSession,
   } = useApp();
   
   const [activeCategory, setActiveCategory] = useState<string>('all');
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
-  const [tableNumber, setTableNumber] = useState(tableFromUrl || '');
+  const [tableNumber, setTableNumber] = useState('');
   const [showOrderStatus, setShowOrderStatus] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [shopNotFound, setShopNotFound] = useState(false);
+  const [isTableLocked, setIsTableLocked] = useState(false);
+
+  // Load shop by slug
+  useEffect(() => {
+    const loadShop = async () => {
+      if (shopSlug) {
+        const shop = await loadShopBySlug(shopSlug);
+        if (!shop) {
+          setShopNotFound(true);
+        }
+      }
+    };
+    loadShop();
+  }, [shopSlug, loadShopBySlug]);
+
+  // Handle table locking from QR code
+  useEffect(() => {
+    if (tableFromUrl && currentShop) {
+      const tableNum = parseInt(tableFromUrl);
+      if (!isNaN(tableNum) && tableNum > 0 && tableNum <= shopSettings.numberOfTables) {
+        // Check if there's an existing session for a different table/shop
+        if (tableSession) {
+          if (tableSession.shopId === currentShop.id && tableSession.tableNumber === tableNum) {
+            // Same table, same shop - use the locked table
+            setTableNumber(tableNum.toString());
+            setIsTableLocked(true);
+          } else if (tableSession.shopId === currentShop.id && tableSession.tableNumber !== tableNum) {
+            // Same shop, different table - keep the locked table
+            setTableNumber(tableSession.tableNumber.toString());
+            setIsTableLocked(true);
+            toast.info(`You're locked to Table ${tableSession.tableNumber}. Clear session to change tables.`);
+          } else {
+            // Different shop - create new session
+            setTableSession({
+              tableNumber: tableNum,
+              shopId: currentShop.id,
+              shopSlug: currentShop.slug,
+              timestamp: Date.now(),
+            });
+            setTableNumber(tableNum.toString());
+            setIsTableLocked(true);
+          }
+        } else {
+          // No existing session - create one
+          setTableSession({
+            tableNumber: tableNum,
+            shopId: currentShop.id,
+            shopSlug: currentShop.slug,
+            timestamp: Date.now(),
+          });
+          setTableNumber(tableNum.toString());
+          setIsTableLocked(true);
+        }
+      }
+    } else if (tableSession && currentShop && tableSession.shopId === currentShop.id) {
+      // No table in URL but we have a session for this shop
+      setTableNumber(tableSession.tableNumber.toString());
+      setIsTableLocked(true);
+    }
+  }, [tableFromUrl, currentShop, tableSession, setTableSession, shopSettings.numberOfTables]);
 
   // Show order status when order is created
   useEffect(() => {
@@ -78,6 +147,59 @@ const CustomerMenu = () => {
     }
   };
 
+  const handleClearSession = () => {
+    clearTableSession();
+    setTableNumber('');
+    setIsTableLocked(false);
+    toast.success('Table session cleared. You can now select a different table.');
+  };
+
+  // Show loading state
+  if (loadingShop && shopSlug) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 mx-auto text-primary animate-spin mb-4" />
+          <p className="text-muted-foreground">Loading shop...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show shop not found
+  if (shopNotFound || (!currentShop && shopSlug)) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <div className="text-center">
+          <AlertTriangle className="w-16 h-16 mx-auto text-warning mb-4" />
+          <h1 className="font-display text-2xl font-bold text-foreground mb-2">Shop Not Found</h1>
+          <p className="text-muted-foreground">The shop you're looking for doesn't exist or has been removed.</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show message if no shop is loaded (legacy /menu route)
+  if (!currentShop && !shopSlug) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <div className="text-center max-w-md">
+          <Coffee className="w-16 h-16 mx-auto text-primary mb-4" />
+          <h1 className="font-display text-2xl font-bold text-foreground mb-2">Welcome to Dai Ko Chiya</h1>
+          <p className="text-muted-foreground mb-4">
+            Please scan a QR code at your table to start ordering, or ask staff for assistance.
+          </p>
+          <Alert className="text-left">
+            <AlertTriangle className="w-4 h-4" />
+            <AlertDescription>
+              Shop owners: Set up your shop in the dashboard to generate QR codes for your tables.
+            </AlertDescription>
+          </Alert>
+        </div>
+      </div>
+    );
+  }
+
   if (!shopSettings.isOpen) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-4">
@@ -98,7 +220,11 @@ const CustomerMenu = () => {
           <div className="container mx-auto px-4 py-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Coffee className="w-6 h-6 text-primary" />
+                {shopSettings.logoUrl ? (
+                  <img src={shopSettings.logoUrl} alt={shopSettings.shopName} className="w-8 h-8 rounded-full object-cover" />
+                ) : (
+                  <Coffee className="w-6 h-6 text-primary" />
+                )}
                 <span className="font-display font-bold text-xl text-foreground">
                   {shopSettings.shopName}
                 </span>
@@ -127,15 +253,22 @@ const CustomerMenu = () => {
         <div className="container mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Coffee className="w-6 h-6 text-primary" />
+              {shopSettings.logoUrl ? (
+                <img src={shopSettings.logoUrl} alt={shopSettings.shopName} className="w-8 h-8 rounded-full object-cover" />
+              ) : (
+                <Coffee className="w-6 h-6 text-primary" />
+              )}
               <span className="font-display font-bold text-xl text-foreground">
                 {shopSettings.shopName}
               </span>
             </div>
-            {tableFromUrl && (
-              <Badge variant="secondary" className="font-medium">
-                Table {tableFromUrl}
-              </Badge>
+            {isTableLocked && tableNumber && (
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary" className="font-medium">
+                  <Lock className="w-3 h-3 mr-1" />
+                  Table {tableNumber}
+                </Badge>
+              </div>
             )}
           </div>
         </div>
@@ -257,19 +390,43 @@ const CustomerMenu = () => {
           <div className="space-y-4 py-4">
             <div>
               <Label htmlFor="table">Table Number</Label>
-              <Input
-                id="table"
-                type="number"
-                placeholder="Enter your table number"
-                value={tableNumber}
-                onChange={(e) => setTableNumber(e.target.value)}
-                className="mt-1.5"
-                min={1}
-                max={shopSettings.numberOfTables}
-              />
-              <p className="text-xs text-muted-foreground mt-1">
-                Tables 1-{shopSettings.numberOfTables} available
-              </p>
+              {isTableLocked ? (
+                <div className="mt-1.5">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      id="table"
+                      type="number"
+                      value={tableNumber}
+                      readOnly
+                      className="bg-secondary/50"
+                    />
+                    <Button variant="outline" size="sm" onClick={handleClearSession}>
+                      <Lock className="w-3 h-3 mr-1" />
+                      Unlock
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
+                    <Lock className="w-3 h-3" />
+                    Table locked from QR code. Click unlock to change.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <Input
+                    id="table"
+                    type="number"
+                    placeholder="Enter your table number"
+                    value={tableNumber}
+                    onChange={(e) => setTableNumber(e.target.value)}
+                    className="mt-1.5"
+                    min={1}
+                    max={shopSettings.numberOfTables}
+                  />
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Tables 1-{shopSettings.numberOfTables} available
+                  </p>
+                </>
+              )}
             </div>
 
             <div className="bg-secondary/50 rounded-lg p-4">
