@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
 import { Button } from '@/components/ui/button';
@@ -10,29 +10,49 @@ import { toast } from 'sonner';
 
 const Login = () => {
   const navigate = useNavigate();
-  const { login } = useApp();
+  const { login, isAuthenticated, isAdmin, authLoading } = useApp();
   
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
+  // Redirect if already authenticated as admin
+  useEffect(() => {
+    if (!authLoading && isAuthenticated && isAdmin) {
+      navigate('/dashboard');
+    }
+  }, [isAuthenticated, isAdmin, authLoading, navigate]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    if (!email || !password) {
+      toast.error('Please enter email and password');
+      return;
+    }
+
     setIsLoading(true);
 
-    // Simulate loading
-    await new Promise(resolve => setTimeout(resolve, 500));
+    const { error } = await login(email, password);
 
-    if (login(email, password)) {
+    if (error) {
+      toast.error(error);
+    } else {
       toast.success('Welcome back!');
       navigate('/dashboard');
-    } else {
-      toast.error('Invalid credentials. Use admin@daikochiya.com / admin123');
     }
     
     setIsLoading(false);
   };
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-secondary via-background to-muted flex items-center justify-center">
+        <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-secondary via-background to-muted flex items-center justify-center p-4">
@@ -58,7 +78,7 @@ const Login = () => {
                 <Input
                   id="email"
                   type="email"
-                  placeholder="admin@daikochiya.com"
+                  placeholder="admin@example.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
@@ -98,9 +118,10 @@ const Login = () => {
             </form>
 
             <div className="mt-6 p-4 bg-secondary/50 rounded-lg">
-              <p className="text-sm text-muted-foreground mb-2">Demo credentials:</p>
-              <p className="text-sm font-mono text-foreground">admin@daikochiya.com</p>
-              <p className="text-sm font-mono text-foreground">admin123</p>
+              <p className="text-sm text-muted-foreground mb-2">Admin access required</p>
+              <p className="text-xs text-muted-foreground">
+                Only users with admin role can access this dashboard.
+              </p>
             </div>
           </CardContent>
         </Card>

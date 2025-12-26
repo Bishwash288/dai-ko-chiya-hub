@@ -18,25 +18,31 @@ import {
   XCircle,
   ChevronDown,
   ChevronUp,
-  Timer
+  Timer,
+  Loader2
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatDistanceToNow } from 'date-fns';
 
 const Orders = () => {
-  const { orders, updateOrderStatus } = useApp();
+  const { orders, updateOrderStatus, loadingOrders } = useApp();
   const [filter, setFilter] = useState<string>('all');
   const [expandedOrder, setExpandedOrder] = useState<string | null>(null);
+  const [updatingOrder, setUpdatingOrder] = useState<string | null>(null);
 
   const filteredOrders = filter === 'all' 
     ? orders 
-    : orders.filter(o => o.status === filter);
+    : orders.filter(o => {
+        if (filter === 'started') return o.status === 'started' || o.status === 'preparing';
+        return o.status === filter;
+      });
 
   const getStatusConfig = (status: Order['status']) => {
     switch (status) {
       case 'pending':
         return { icon: Clock, label: 'Pending', class: 'status-pending', color: 'warning' };
       case 'started':
+      case 'preparing':
         return { icon: Flame, label: 'Preparing', class: 'status-started', color: 'accent' };
       case 'ready':
         return { icon: CheckCircle2, label: 'Ready', class: 'status-ready', color: 'success' };
@@ -47,16 +53,26 @@ const Orders = () => {
     }
   };
 
-  const handleStatusChange = (orderId: string, newStatus: Order['status']) => {
-    updateOrderStatus(orderId, newStatus);
-    toast.success(`Order ${orderId} marked as ${newStatus}`);
+  const handleStatusChange = async (orderId: string, newStatus: Order['status']) => {
+    setUpdatingOrder(orderId);
+    await updateOrderStatus(orderId, newStatus);
+    toast.success(`Order marked as ${newStatus}`);
+    setUpdatingOrder(null);
   };
 
   const stats = [
     { label: 'Pending', value: orders.filter(o => o.status === 'pending').length, color: 'bg-warning' },
-    { label: 'Preparing', value: orders.filter(o => o.status === 'started').length, color: 'bg-accent' },
+    { label: 'Preparing', value: orders.filter(o => o.status === 'started' || o.status === 'preparing').length, color: 'bg-accent' },
     { label: 'Ready', value: orders.filter(o => o.status === 'ready').length, color: 'bg-success' },
   ];
+
+  if (loadingOrders) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -110,6 +126,8 @@ const Orders = () => {
             const config = getStatusConfig(order.status);
             const StatusIcon = config.icon;
             const isExpanded = expandedOrder === order.id;
+            const isUpdating = updatingOrder === order.id;
+            const isPreparing = order.status === 'started' || order.status === 'preparing';
 
             return (
               <Card 
@@ -127,7 +145,9 @@ const Orders = () => {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-4">
                         <div className="flex flex-col">
-                          <span className="font-bold text-foreground">{order.id}</span>
+                          <span className="font-bold text-foreground text-sm">
+                            #{order.id.slice(0, 8)}
+                          </span>
                           <div className="flex items-center gap-2 mt-1">
                             <Badge variant="outline">Table {order.tableNumber}</Badge>
                             <span className="text-sm text-muted-foreground flex items-center gap-1">
@@ -157,11 +177,11 @@ const Orders = () => {
                         <div>
                           <h4 className="text-sm font-medium text-muted-foreground mb-2">Order Items</h4>
                           <div className="space-y-2">
-                            {order.items.map(item => (
-                              <div key={item.id} className="flex justify-between text-sm bg-secondary/30 p-2 rounded">
+                            {order.items.map((item, idx) => (
+                              <div key={idx} className="flex justify-between text-sm bg-secondary/30 p-2 rounded">
                                 <span className="text-foreground">{item.name} × {item.quantity}</span>
                                 <span className="font-medium">
-                                  Rs. {Math.round((item.discount ? item.price * (1 - item.discount / 100) : item.price) * item.quantity)}
+                                  Rs. {Math.round(item.price * item.quantity)}
                                 </span>
                               </div>
                             ))}
@@ -176,18 +196,20 @@ const Orders = () => {
                                 <Button 
                                   size="sm"
                                   className="bg-accent hover:bg-accent/90 text-accent-foreground"
+                                  disabled={isUpdating}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     handleStatusChange(order.id, 'started');
                                   }}
                                 >
-                                  <Flame className="w-4 h-4 mr-1" />
+                                  {isUpdating ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Flame className="w-4 h-4 mr-1" />}
                                   Start Preparing
                                 </Button>
                                 <Button 
                                   variant="outline"
                                   size="sm"
                                   className="text-destructive border-destructive hover:bg-destructive/10"
+                                  disabled={isUpdating}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     handleStatusChange(order.id, 'cancelled');
@@ -198,16 +220,17 @@ const Orders = () => {
                                 </Button>
                               </>
                             )}
-                            {order.status === 'started' && (
+                            {isPreparing && (
                               <Button 
                                 size="sm"
                                 className="bg-success hover:bg-success/90 text-success-foreground"
+                                disabled={isUpdating}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   handleStatusChange(order.id, 'ready');
                                 }}
                               >
-                                <CheckCircle2 className="w-4 h-4 mr-1" />
+                                {isUpdating ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1" />}
                                 Mark Ready
                               </Button>
                             )}
