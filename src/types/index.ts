@@ -17,12 +17,21 @@ export interface CartItem extends MenuItem {
   quantity: number;
 }
 
+export interface OrderItem {
+  id: string;
+  name: string;
+  price: number;
+  quantity: number;
+}
+
 export interface Order {
   id: string;
   tableNumber: number;
-  items: CartItem[];
-  status: 'pending' | 'started' | 'ready' | 'cancelled';
+  items: OrderItem[];
+  status: 'pending' | 'started' | 'ready' | 'cancelled' | 'preparing';
   totalAmount: number;
+  customerName?: string;
+  notes?: string;
   createdAt: Date;
   updatedAt: Date;
 }

@@ -10,7 +10,8 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/co
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { ShoppingCart, Coffee, Store, ChevronRight } from 'lucide-react';
+import { Skeleton } from '@/components/ui/skeleton';
+import { ShoppingCart, Coffee, Store, ChevronRight, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 const CustomerMenu = () => {
@@ -19,11 +20,11 @@ const CustomerMenu = () => {
   
   const { 
     menuItems, 
+    loadingMenu,
     cart, 
     createOrder, 
     currentOrder, 
     shopSettings,
-    clearCart 
   } = useApp();
   
   const [activeCategory, setActiveCategory] = useState<string>('all');
@@ -31,6 +32,7 @@ const CustomerMenu = () => {
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [tableNumber, setTableNumber] = useState(tableFromUrl || '');
   const [showOrderStatus, setShowOrderStatus] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Show order status when order is created
   useEffect(() => {
@@ -57,17 +59,22 @@ const CustomerMenu = () => {
 
   const cartItemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
 
-  const handleCheckout = () => {
+  const handleCheckout = async () => {
     if (!tableNumber || isNaN(parseInt(tableNumber))) {
       toast.error('Please enter a valid table number');
       return;
     }
 
-    const order = createOrder(parseInt(tableNumber));
+    setIsSubmitting(true);
+    const order = await createOrder(parseInt(tableNumber));
+    setIsSubmitting(false);
+
     if (order) {
       setIsCheckoutOpen(false);
       setIsCartOpen(false);
       toast.success('Order placed successfully!');
+    } else {
+      toast.error('Failed to place order. Please try again.');
     }
   };
 
@@ -172,13 +179,25 @@ const CustomerMenu = () => {
 
       {/* Menu Grid */}
       <main className="container mx-auto px-4 py-6">
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-          {filteredItems.map(item => (
-            <MenuCard key={item.id} item={item} />
-          ))}
-        </div>
+        {loadingMenu ? (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            {[1, 2, 3, 4, 5, 6].map(i => (
+              <div key={i} className="space-y-3">
+                <Skeleton className="h-32 w-full rounded-lg" />
+                <Skeleton className="h-4 w-3/4" />
+                <Skeleton className="h-4 w-1/2" />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            {filteredItems.map(item => (
+              <MenuCard key={item.id} item={item} />
+            ))}
+          </div>
+        )}
 
-        {filteredItems.length === 0 && (
+        {!loadingMenu && filteredItems.length === 0 && (
           <div className="text-center py-12">
             <p className="text-muted-foreground">No items available in this category</p>
           </div>
@@ -275,8 +294,19 @@ const CustomerMenu = () => {
             <Button variant="outline" onClick={() => setIsCheckoutOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleCheckout} className="bg-primary hover:bg-primary/90 text-primary-foreground">
-              Place Order
+            <Button 
+              onClick={handleCheckout} 
+              className="bg-primary hover:bg-primary/90 text-primary-foreground"
+              disabled={isSubmitting}
+            >
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Placing Order...
+                </>
+              ) : (
+                'Place Order'
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

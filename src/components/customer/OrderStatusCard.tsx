@@ -122,7 +122,7 @@ const OrderStatusCard = ({ order }: OrderStatusCardProps) => {
                 {item.name} × {item.quantity}
               </span>
               <span className="font-medium text-foreground">
-                Rs. {Math.round((item.discount ? item.price * (1 - item.discount / 100) : item.price) * item.quantity)}
+                Rs. {Math.round(item.price * item.quantity)}
               </span>
             </div>
           ))}
