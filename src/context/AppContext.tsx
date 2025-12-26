@@ -29,8 +29,10 @@ interface AppContextType {
   orders: Order[];
   setOrders: React.Dispatch<React.SetStateAction<Order[]>>;
   createOrder: (tableNumber: number) => Promise<Order | null>;
+  addToExistingOrder: (orderId: string, items: CartItem[]) => Promise<boolean>;
   updateOrderStatus: (orderId: string, status: Order['status']) => Promise<void>;
   loadingOrders: boolean;
+  getActiveOrderForTable: (tableNumber: number) => Order | null;
   
   // Current order tracking (customer side)
   currentOrder: Order | null;
@@ -231,9 +233,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         .from('shops')
         .select('*')
         .eq('slug', slug)
-        .single();
+        .maybeSingle();
       
-      if (error || !data) {
+      if (error) {
+        console.error('Error loading shop:', error);
+        setLoadingShop(false);
+        return null;
+      }
+      
+      if (!data) {
+        console.log('No shop found with slug:', slug);
         setLoadingShop(false);
         return null;
       }
@@ -255,7 +264,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       setCurrentShop(shop);
       setLoadingShop(false);
       return shop;
-    } catch {
+    } catch (err) {
+      console.error('Exception loading shop:', err);
       setLoadingShop(false);
       return null;
     }
@@ -703,6 +713,104 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  // Get active order for a table (pending or preparing - not ready/cancelled)
+  const getActiveOrderForTable = (tableNumber: number): Order | null => {
+    return orders.find(o => 
+      o.tableNumber === tableNumber && 
+      o.shopId === currentShop?.id &&
+      (o.status === 'pending' || o.status === 'preparing' || o.status === 'started')
+    ) || null;
+  };
+
+  // Add items to an existing order
+  const addToExistingOrder = async (orderId: string, items: CartItem[]): Promise<boolean> => {
+    if (items.length === 0) return false;
+    
+    try {
+      // Get the existing order
+      const existingOrder = orders.find(o => o.id === orderId);
+      if (!existingOrder) return false;
+      
+      // Check if order can accept new items
+      if (existingOrder.status === 'cancelled' || existingOrder.status === 'ready') {
+        console.error('Cannot add items to cancelled or ready orders');
+        return false;
+      }
+      
+      // Calculate new total
+      const additionalAmount = items.reduce((sum, item) => {
+        const price = item.discount ? item.price * (1 - item.discount / 100) : item.price;
+        return sum + price * item.quantity;
+      }, 0);
+      
+      const newTotal = existingOrder.totalAmount + additionalAmount;
+      
+      // Insert new order items
+      const orderItems = items.map(item => ({
+        order_id: orderId,
+        menu_item_id: item.id,
+        name: item.name,
+        price: item.discount ? item.price * (1 - item.discount / 100) : item.price,
+        quantity: item.quantity,
+      }));
+      
+      const { error: itemsError } = await supabase
+        .from('order_items')
+        .insert(orderItems);
+      
+      if (itemsError) throw itemsError;
+      
+      // Update order total and reset to pending (new items added)
+      const { error: orderError } = await supabase
+        .from('orders')
+        .update({ 
+          total: newTotal,
+          status: 'pending', // Reset to pending when new items added
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', orderId);
+      
+      if (orderError) throw orderError;
+      
+      // Update local state
+      const newOrderItems: OrderItem[] = items.map(item => ({
+        id: item.id,
+        name: item.name,
+        price: item.discount ? item.price * (1 - item.discount / 100) : item.price,
+        quantity: item.quantity,
+      }));
+      
+      setOrders(prev => prev.map(o => 
+        o.id === orderId 
+          ? { 
+              ...o, 
+              items: [...o.items, ...newOrderItems],
+              totalAmount: newTotal,
+              status: 'pending' as const,
+              updatedAt: new Date()
+            } 
+          : o
+      ));
+      
+      // Update current order if it's the same
+      if (currentOrder?.id === orderId) {
+        setCurrentOrder(prev => prev ? {
+          ...prev,
+          items: [...prev.items, ...newOrderItems],
+          totalAmount: newTotal,
+          status: 'pending',
+          updatedAt: new Date()
+        } : null);
+      }
+      
+      clearCart();
+      return true;
+    } catch (error) {
+      console.error('Error adding to existing order:', error);
+      return false;
+    }
+  };
+
   const updateOrderStatus = async (orderId: string, status: Order['status']) => {
     const dbStatus = status === 'started' ? 'preparing' : status;
     
@@ -814,8 +922,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       orders,
       setOrders,
       createOrder,
+      addToExistingOrder,
       updateOrderStatus,
       loadingOrders,
+      getActiveOrderForTable,
       currentOrder,
       setCurrentOrder,
       tableSession,

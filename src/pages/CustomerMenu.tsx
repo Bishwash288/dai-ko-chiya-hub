@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams, useParams } from 'react-router-dom';
 import { useApp } from '@/context/AppContext';
+import { Order } from '@/types';
 import MenuCard from '@/components/customer/MenuCard';
 import CartItemCard from '@/components/customer/CartItemCard';
 import OrderStatusCard from '@/components/customer/OrderStatusCard';
@@ -25,7 +26,8 @@ const CustomerMenu = () => {
     loadingMenu,
     loadingShop,
     cart, 
-    createOrder, 
+    createOrder,
+    addToExistingOrder,
     currentOrder, 
     shopSettings,
     currentShop,
@@ -33,6 +35,8 @@ const CustomerMenu = () => {
     tableSession,
     setTableSession,
     clearTableSession,
+    getActiveOrderForTable,
+    clearCart,
   } = useApp();
   
   const [activeCategory, setActiveCategory] = useState<string>('all');
@@ -43,6 +47,7 @@ const CustomerMenu = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [shopNotFound, setShopNotFound] = useState(false);
   const [isTableLocked, setIsTableLocked] = useState(false);
+  const [activeOrder, setActiveOrder] = useState<Order | null>(null);
 
   // Load shop by slug
   useEffect(() => {
@@ -103,10 +108,19 @@ const CustomerMenu = () => {
     }
   }, [tableFromUrl, currentShop, tableSession, setTableSession, shopSettings.numberOfTables]);
 
+  // Check for active order on this table
+  useEffect(() => {
+    if (tableNumber && currentShop) {
+      const active = getActiveOrderForTable(parseInt(tableNumber));
+      setActiveOrder(active);
+    }
+  }, [tableNumber, currentShop, getActiveOrderForTable]);
+
   // Show order status when order is created
   useEffect(() => {
     if (currentOrder) {
       setShowOrderStatus(true);
+      setActiveOrder(currentOrder);
     }
   }, [currentOrder]);
 
@@ -128,6 +142,9 @@ const CustomerMenu = () => {
 
   const cartItemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
 
+  // Check if customer can add items (only when order is pending or preparing)
+  const canAddItems = !activeOrder || activeOrder.status === 'pending' || activeOrder.status === 'preparing' || activeOrder.status === 'started';
+
   const handleCheckout = async () => {
     if (!tableNumber || isNaN(parseInt(tableNumber))) {
       toast.error('Please enter a valid table number');
@@ -135,15 +152,30 @@ const CustomerMenu = () => {
     }
 
     setIsSubmitting(true);
-    const order = await createOrder(parseInt(tableNumber));
-    setIsSubmitting(false);
-
-    if (order) {
-      setIsCheckoutOpen(false);
-      setIsCartOpen(false);
-      toast.success('Order placed successfully!');
+    
+    // If there's an active order, add to it instead of creating new
+    if (activeOrder && canAddItems) {
+      const success = await addToExistingOrder(activeOrder.id, cart);
+      setIsSubmitting(false);
+      
+      if (success) {
+        setIsCheckoutOpen(false);
+        setIsCartOpen(false);
+        toast.success('Items added to your order!');
+      } else {
+        toast.error('Failed to add items. Please try again.');
+      }
     } else {
-      toast.error('Failed to place order. Please try again.');
+      const order = await createOrder(parseInt(tableNumber));
+      setIsSubmitting(false);
+
+      if (order) {
+        setIsCheckoutOpen(false);
+        setIsCartOpen(false);
+        toast.success('Order placed successfully!');
+      } else {
+        toast.error('Failed to place order. Please try again.');
+      }
     }
   };
 
@@ -151,6 +183,8 @@ const CustomerMenu = () => {
     clearTableSession();
     setTableNumber('');
     setIsTableLocked(false);
+    setActiveOrder(null);
+    clearCart();
     toast.success('Table session cleared. You can now select a different table.');
   };
 
@@ -384,10 +418,32 @@ const CustomerMenu = () => {
       <Dialog open={isCheckoutOpen} onOpenChange={setIsCheckoutOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle className="font-display text-xl">Confirm Order</DialogTitle>
+            <DialogTitle className="font-display text-xl">
+              {activeOrder ? 'Add to Order' : 'Confirm Order'}
+            </DialogTitle>
           </DialogHeader>
           
           <div className="space-y-4 py-4">
+            {/* Show active order warning if can't add items */}
+            {activeOrder && !canAddItems && (
+              <Alert variant="destructive">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertDescription>
+                  Your order is {activeOrder.status}. You cannot add more items.
+                </AlertDescription>
+              </Alert>
+            )}
+
+            {/* Show existing order info if adding to it */}
+            {activeOrder && canAddItems && (
+              <Alert>
+                <AlertTriangle className="h-4 w-4" />
+                <AlertDescription>
+                  Adding items to your existing order (Table {activeOrder.tableNumber})
+                </AlertDescription>
+              </Alert>
+            )}
+
             <div>
               <Label htmlFor="table">Table Number</Label>
               {isTableLocked ? (
@@ -430,6 +486,7 @@ const CustomerMenu = () => {
             </div>
 
             <div className="bg-secondary/50 rounded-lg p-4">
+              <h4 className="text-sm font-medium mb-2">New Items</h4>
               <div className="space-y-2 text-sm">
                 {cart.map(item => (
                   <div key={item.id} className="flex justify-between">
@@ -441,9 +498,15 @@ const CustomerMenu = () => {
                 ))}
               </div>
               <div className="border-t border-border mt-3 pt-3 flex justify-between font-semibold">
-                <span>Total</span>
+                <span>{activeOrder ? 'Additional Total' : 'Total'}</span>
                 <span className="text-primary">Rs. {Math.round(cartTotal)}</span>
               </div>
+              {activeOrder && canAddItems && (
+                <div className="border-t border-border mt-2 pt-2 flex justify-between text-sm text-muted-foreground">
+                  <span>Previous Order Total</span>
+                  <span>Rs. {Math.round(activeOrder.totalAmount)}</span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -454,13 +517,15 @@ const CustomerMenu = () => {
             <Button 
               onClick={handleCheckout} 
               className="bg-primary hover:bg-primary/90 text-primary-foreground"
-              disabled={isSubmitting}
+              disabled={isSubmitting || (activeOrder && !canAddItems)}
             >
               {isSubmitting ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Placing Order...
+                  {activeOrder ? 'Adding Items...' : 'Placing Order...'}
                 </>
+              ) : activeOrder && canAddItems ? (
+                'Add to Order'
               ) : (
                 'Place Order'
               )}
