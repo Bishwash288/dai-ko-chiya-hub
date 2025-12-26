@@ -27,6 +27,7 @@ export type Database = {
           is_todays_special: boolean
           name: string
           price: number
+          shop_id: string | null
           updated_at: string
         }
         Insert: {
@@ -41,6 +42,7 @@ export type Database = {
           is_todays_special?: boolean
           name: string
           price: number
+          shop_id?: string | null
           updated_at?: string
         }
         Update: {
@@ -55,9 +57,18 @@ export type Database = {
           is_todays_special?: boolean
           name?: string
           price?: number
+          shop_id?: string | null
           updated_at?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "menu_items_shop_id_fkey"
+            columns: ["shop_id"]
+            isOneToOne: false
+            referencedRelation: "shops"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       order_items: {
         Row: {
@@ -110,6 +121,7 @@ export type Database = {
           customer_name: string | null
           id: string
           notes: string | null
+          shop_id: string | null
           status: string
           table_number: number
           total: number
@@ -120,6 +132,7 @@ export type Database = {
           customer_name?: string | null
           id?: string
           notes?: string | null
+          shop_id?: string | null
           status?: string
           table_number: number
           total: number
@@ -130,9 +143,60 @@ export type Database = {
           customer_name?: string | null
           id?: string
           notes?: string | null
+          shop_id?: string | null
           status?: string
           table_number?: number
           total?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "orders_shop_id_fkey"
+            columns: ["shop_id"]
+            isOneToOne: false
+            referencedRelation: "shops"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      shops: {
+        Row: {
+          browser_notifications: boolean
+          created_at: string
+          description: string | null
+          id: string
+          is_open: boolean
+          logo_url: string | null
+          name: string
+          number_of_tables: number
+          slug: string
+          sound_alerts: boolean
+          updated_at: string
+        }
+        Insert: {
+          browser_notifications?: boolean
+          created_at?: string
+          description?: string | null
+          id?: string
+          is_open?: boolean
+          logo_url?: string | null
+          name?: string
+          number_of_tables?: number
+          slug: string
+          sound_alerts?: boolean
+          updated_at?: string
+        }
+        Update: {
+          browser_notifications?: boolean
+          created_at?: string
+          description?: string | null
+          id?: string
+          is_open?: boolean
+          logo_url?: string | null
+          name?: string
+          number_of_tables?: number
+          slug?: string
+          sound_alerts?: boolean
           updated_at?: string
         }
         Relationships: []
@@ -142,21 +206,32 @@ export type Database = {
           created_at: string
           id: string
           role: Database["public"]["Enums"]["app_role"]
+          shop_id: string | null
           user_id: string
         }
         Insert: {
           created_at?: string
           id?: string
           role?: Database["public"]["Enums"]["app_role"]
+          shop_id?: string | null
           user_id: string
         }
         Update: {
           created_at?: string
           id?: string
           role?: Database["public"]["Enums"]["app_role"]
+          shop_id?: string | null
           user_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "user_roles_shop_id_fkey"
+            columns: ["shop_id"]
+            isOneToOne: false
+            referencedRelation: "shops"
+            referencedColumns: ["id"]
+          },
+        ]
       }
     }
     Views: {

@@ -9,12 +9,15 @@ import { Download, Copy, Info, Image } from 'lucide-react';
 import { toast } from 'sonner';
 
 const QRCodes = () => {
-  const { shopSettings } = useApp();
+  const { shopSettings, currentShop } = useApp();
   const qrRefs = useRef<{ [key: number]: HTMLDivElement | null }>({});
 
   const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
   
   const getTableUrl = (tableNumber: number) => {
+    if (currentShop) {
+      return `${baseUrl}/shop/${currentShop.slug}/menu?table=${tableNumber}`;
+    }
     return `${baseUrl}/menu?table=${tableNumber}`;
   };
 
@@ -23,7 +26,7 @@ const QRCodes = () => {
     toast.success(`Table ${tableNumber} URL copied!`);
   };
 
-  const downloadQR = (tableNumber: number) => {
+  const downloadQR = async (tableNumber: number) => {
     const qrElement = qrRefs.current[tableNumber];
     if (!qrElement) return;
 
@@ -35,32 +38,51 @@ const QRCodes = () => {
     const ctx = canvas.getContext('2d');
     const img = new window.Image();
 
-    img.onload = () => {
+    img.onload = async () => {
       canvas.width = 300;
-      canvas.height = 350;
+      canvas.height = 380;
       
       if (ctx) {
         // White background
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         
+        // Draw logo if available
+        if (shopSettings.logoUrl) {
+          try {
+            const logoImg = new window.Image();
+            logoImg.crossOrigin = 'anonymous';
+            await new Promise((resolve, reject) => {
+              logoImg.onload = resolve;
+              logoImg.onerror = reject;
+              logoImg.src = shopSettings.logoUrl!;
+            });
+            // Draw centered logo at top
+            const logoSize = 50;
+            ctx.drawImage(logoImg, (canvas.width - logoSize) / 2, 10, logoSize, logoSize);
+          } catch {
+            // If logo fails to load, continue without it
+          }
+        }
+        
         // Draw QR code
-        ctx.drawImage(img, 25, 20, 250, 250);
+        const qrY = shopSettings.logoUrl ? 70 : 20;
+        ctx.drawImage(img, 25, qrY, 250, 250);
         
         // Draw table number
         ctx.fillStyle = '#5c3a21';
         ctx.font = 'bold 24px Arial';
         ctx.textAlign = 'center';
-        ctx.fillText(`Table ${tableNumber}`, canvas.width / 2, 300);
+        ctx.fillText(`Table ${tableNumber}`, canvas.width / 2, shopSettings.logoUrl ? 350 : 300);
         
-        // Draw URL hint
+        // Draw shop name
         ctx.fillStyle = '#8b7355';
-        ctx.font = '12px Arial';
-        ctx.fillText('Scan to order', canvas.width / 2, 330);
+        ctx.font = '14px Arial';
+        ctx.fillText(shopSettings.shopName, canvas.width / 2, shopSettings.logoUrl ? 370 : 320);
       }
 
       const link = document.createElement('a');
-      link.download = `table-${tableNumber}-qr.png`;
+      link.download = `${currentShop?.slug || 'shop'}-table-${tableNumber}-qr.png`;
       link.href = canvas.toDataURL('image/png');
       link.click();
     };
@@ -72,8 +94,8 @@ const QRCodes = () => {
     toast.info('Downloading all QR codes...');
     
     for (let i = 1; i <= shopSettings.numberOfTables; i++) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      downloadQR(i);
+      await new Promise(resolve => setTimeout(resolve, 300));
+      await downloadQR(i);
     }
     
     toast.success('All QR codes downloaded!');
@@ -104,7 +126,7 @@ const QRCodes = () => {
           <Info className="w-4 h-4" />
           <AlertDescription>
             <strong>Print-ready QR codes</strong><br />
-            Each QR code includes your shop logo and is styled for a professional look. Click "Save" to download individual QR codes or "Download All" to get all at once. Print and place them on each table for customers to scan.
+            Each QR code includes your shop logo and is styled for a professional look. Click "Save" to download individual QR codes or "Download All" to get all at once.
           </AlertDescription>
         </Alert>
 
@@ -112,7 +134,7 @@ const QRCodes = () => {
           <Alert className="bg-warning/10 border-warning/30">
             <Image className="w-4 h-4 text-warning" />
             <AlertDescription className="text-warning">
-              <strong>Using default logo</strong><br />
+              <strong>No logo uploaded</strong><br />
               Upload your shop logo in Settings to personalize your QR codes with your brand.
             </AlertDescription>
           </Alert>
@@ -124,6 +146,17 @@ const QRCodes = () => {
         {Array.from({ length: shopSettings.numberOfTables }, (_, i) => i + 1).map(tableNumber => (
           <Card key={tableNumber} className="overflow-hidden hover:shadow-warm transition-shadow duration-300">
             <CardContent className="p-4">
+              {/* Logo preview */}
+              {shopSettings.logoUrl && (
+                <div className="flex justify-center mb-2">
+                  <img 
+                    src={shopSettings.logoUrl} 
+                    alt={shopSettings.shopName} 
+                    className="w-10 h-10 rounded-full object-cover"
+                  />
+                </div>
+              )}
+              
               {/* QR Code */}
               <div 
                 ref={el => qrRefs.current[tableNumber] = el}
@@ -145,7 +178,7 @@ const QRCodes = () => {
                   Table {tableNumber}
                 </Badge>
                 <p className="text-xs text-muted-foreground truncate mt-1">
-                  /menu?table={tableNumber}
+                  {currentShop ? `/shop/${currentShop.slug}/menu?table=${tableNumber}` : `/menu?table=${tableNumber}`}
                 </p>
               </div>
 

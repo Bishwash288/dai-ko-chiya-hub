@@ -31,16 +31,19 @@ import {
   Tag,
   Coffee,
   Cookie,
-  Zap
+  Zap,
+  Loader2
 } from 'lucide-react';
 import { toast } from 'sonner';
 
 const MenuManagement = () => {
-  const { menuItems, setMenuItems } = useApp();
+  const { menuItems, addMenuItem, updateMenuItem, deleteMenuItem, currentShop } = useApp();
   const [activeCategory, setActiveCategory] = useState<string>('all');
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const [formData, setFormData] = useState<Partial<MenuItem>>({
     name: '',
@@ -94,52 +97,88 @@ const MenuManagement = () => {
     setIsDialogOpen(true);
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!formData.name || !formData.price) {
       toast.error('Please fill in required fields');
       return;
     }
 
-    if (editingItem) {
-      setMenuItems(prev => 
-        prev.map(item => 
-          item.id === editingItem.id 
-            ? { ...item, ...formData } as MenuItem
-            : item
-        )
-      );
-      toast.success('Menu item updated');
-    } else {
-      const newItem: MenuItem = {
-        id: String(Date.now()),
-        name: formData.name!,
-        description: formData.description || '',
-        price: formData.price!,
-        category: formData.category as 'tea' | 'snacks' | 'extra',
-        discount: formData.discount,
-        isBestSeller: formData.isBestSeller,
-        isTodaysSpecial: formData.isTodaysSpecial,
-        isAvailable: formData.isAvailable ?? true,
-      };
-      setMenuItems(prev => [...prev, newItem]);
-      toast.success('Menu item added');
+    if (!currentShop) {
+      toast.error('No shop selected. Please log in again.');
+      return;
     }
 
-    setIsDialogOpen(false);
+    setIsSaving(true);
+
+    try {
+      if (editingItem) {
+        const success = await updateMenuItem(editingItem.id, {
+          name: formData.name,
+          description: formData.description,
+          price: formData.price,
+          category: formData.category as 'tea' | 'snacks' | 'extra',
+          discount: formData.discount,
+          isBestSeller: formData.isBestSeller,
+          isTodaysSpecial: formData.isTodaysSpecial,
+          isAvailable: formData.isAvailable,
+        });
+        
+        if (success) {
+          toast.success('Menu item updated');
+          setIsDialogOpen(false);
+        } else {
+          toast.error('Failed to update menu item');
+        }
+      } else {
+        const newItem = await addMenuItem({
+          name: formData.name!,
+          description: formData.description || '',
+          price: formData.price!,
+          category: formData.category as 'tea' | 'snacks' | 'extra',
+          discount: formData.discount,
+          isBestSeller: formData.isBestSeller,
+          isTodaysSpecial: formData.isTodaysSpecial,
+          isAvailable: formData.isAvailable ?? true,
+        });
+        
+        if (newItem) {
+          toast.success('Menu item added');
+          setIsDialogOpen(false);
+        } else {
+          toast.error('Failed to add menu item');
+        }
+      }
+    } catch (error) {
+      toast.error('An error occurred');
+      console.error(error);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  const handleDelete = (id: string) => {
-    setMenuItems(prev => prev.filter(item => item.id !== id));
-    setDeleteConfirm(null);
-    toast.success('Menu item deleted');
+  const handleDelete = async (id: string) => {
+    setIsDeleting(true);
+    try {
+      const success = await deleteMenuItem(id);
+      if (success) {
+        toast.success('Menu item deleted');
+      } else {
+        toast.error('Failed to delete menu item');
+      }
+    } catch (error) {
+      toast.error('An error occurred');
+      console.error(error);
+    } finally {
+      setIsDeleting(false);
+      setDeleteConfirm(null);
+    }
   };
 
-  const toggleAvailability = (id: string) => {
-    setMenuItems(prev =>
-      prev.map(item =>
-        item.id === id ? { ...item, isAvailable: !item.isAvailable } : item
-      )
-    );
+  const toggleAvailability = async (id: string, currentAvailability: boolean) => {
+    const success = await updateMenuItem(id, { isAvailable: !currentAvailability });
+    if (!success) {
+      toast.error('Failed to update availability');
+    }
   };
 
   return (
@@ -219,7 +258,7 @@ const MenuManagement = () => {
                     <div className="flex items-center gap-2">
                       <Switch
                         checked={item.isAvailable}
-                        onCheckedChange={() => toggleAvailability(item.id)}
+                        onCheckedChange={() => toggleAvailability(item.id, item.isAvailable)}
                         className="scale-75"
                       />
                       <span className="text-xs text-muted-foreground">
@@ -253,6 +292,16 @@ const MenuManagement = () => {
           </Card>
         ))}
       </div>
+
+      {filteredItems.length === 0 && (
+        <div className="text-center py-12">
+          <p className="text-muted-foreground mb-4">No menu items yet</p>
+          <Button onClick={openAddDialog} variant="outline">
+            <Plus className="w-4 h-4 mr-2" />
+            Add your first item
+          </Button>
+        </div>
+      )}
 
       {/* Add/Edit Dialog */}
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
@@ -362,8 +411,19 @@ const MenuManagement = () => {
             <Button variant="outline" onClick={() => setIsDialogOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleSave} className="bg-primary hover:bg-primary/90 text-primary-foreground">
-              {editingItem ? 'Save Changes' : 'Add Item'}
+            <Button 
+              onClick={handleSave} 
+              className="bg-primary hover:bg-primary/90 text-primary-foreground"
+              disabled={isSaving}
+            >
+              {isSaving ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                editingItem ? 'Save Changes' : 'Add Item'
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -385,8 +445,16 @@ const MenuManagement = () => {
             <Button 
               variant="destructive" 
               onClick={() => deleteConfirm && handleDelete(deleteConfirm)}
+              disabled={isDeleting}
             >
-              Delete
+              {isDeleting ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                'Delete'
+              )}
             </Button>
           </DialogFooter>
         </DialogContent>

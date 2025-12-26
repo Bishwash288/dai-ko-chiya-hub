@@ -1,5 +1,19 @@
 // Types for the Dai Ko Chiya app
 
+export interface Shop {
+  id: string;
+  name: string;
+  slug: string;
+  description?: string;
+  logoUrl?: string;
+  numberOfTables: number;
+  isOpen: boolean;
+  soundAlerts: boolean;
+  browserNotifications: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface MenuItem {
   id: string;
   name: string;
@@ -11,6 +25,7 @@ export interface MenuItem {
   isBestSeller?: boolean;
   isTodaysSpecial?: boolean;
   isAvailable: boolean;
+  shopId?: string;
 }
 
 export interface CartItem extends MenuItem {
@@ -34,6 +49,7 @@ export interface Order {
   notes?: string;
   createdAt: Date;
   updatedAt: Date;
+  shopId?: string;
 }
 
 export interface ShopSettings {
@@ -56,4 +72,11 @@ export interface Analytics {
   ordersByStatus: { status: string; count: number }[];
   peakHours: { hour: string; revenue: number }[];
   dailyRevenue: { day: string; revenue: number }[];
+}
+
+export interface TableSession {
+  tableNumber: number;
+  shopId: string;
+  shopSlug: string;
+  timestamp: number;
 }

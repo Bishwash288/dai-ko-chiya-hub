@@ -1,14 +1,22 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { MenuItem, CartItem, Order, OrderItem, ShopSettings, Analytics } from '@/types';
-import { mockShopSettings, mockAnalytics } from '@/data/mockData';
+import { MenuItem, CartItem, Order, OrderItem, ShopSettings, Analytics, Shop, TableSession } from '@/types';
+import { mockAnalytics } from '@/data/mockData';
 import { supabase } from '@/integrations/supabase/client';
 import { User, Session } from '@supabase/supabase-js';
 
 interface AppContextType {
+  // Shop
+  currentShop: Shop | null;
+  setCurrentShop: React.Dispatch<React.SetStateAction<Shop | null>>;
+  loadingShop: boolean;
+  
   // Menu
   menuItems: MenuItem[];
   setMenuItems: React.Dispatch<React.SetStateAction<MenuItem[]>>;
   loadingMenu: boolean;
+  addMenuItem: (item: Omit<MenuItem, 'id'>) => Promise<MenuItem | null>;
+  updateMenuItem: (id: string, item: Partial<MenuItem>) => Promise<boolean>;
+  deleteMenuItem: (id: string) => Promise<boolean>;
   
   // Cart
   cart: CartItem[];
@@ -28,9 +36,16 @@ interface AppContextType {
   currentOrder: Order | null;
   setCurrentOrder: React.Dispatch<React.SetStateAction<Order | null>>;
   
-  // Shop Settings
+  // Table Session (for table locking)
+  tableSession: TableSession | null;
+  setTableSession: (session: TableSession | null) => void;
+  clearTableSession: () => void;
+  
+  // Shop Settings (derived from currentShop for backward compatibility)
   shopSettings: ShopSettings;
   setShopSettings: React.Dispatch<React.SetStateAction<ShopSettings>>;
+  updateShopSettings: (settings: Partial<Shop>) => Promise<boolean>;
+  uploadShopLogo: (file: File) => Promise<string | null>;
   
   // Analytics
   analytics: Analytics;
@@ -41,22 +56,59 @@ interface AppContextType {
   isAdmin: boolean;
   isAuthenticated: boolean;
   authLoading: boolean;
-  login: (email: string, password: string) => Promise<{ error: string | null }>;
+  login: (email: string, password: string) => Promise<{ error: string | null; shopSlug?: string }>;
   signup: (email: string, password: string) => Promise<{ error: string | null }>;
   logout: () => Promise<void>;
+  
+  // Shop loading by slug
+  loadShopBySlug: (slug: string) => Promise<Shop | null>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
+const TABLE_SESSION_KEY = 'dkc_table_session';
+
 export const AppProvider = ({ children }: { children: ReactNode }) => {
+  const [currentShop, setCurrentShop] = useState<Shop | null>(null);
+  const [loadingShop, setLoadingShop] = useState(false);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [loadingMenu, setLoadingMenu] = useState(true);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [loadingOrders, setLoadingOrders] = useState(true);
   const [currentOrder, setCurrentOrder] = useState<Order | null>(null);
-  const [shopSettings, setShopSettings] = useState<ShopSettings>(mockShopSettings);
   const [analytics] = useState<Analytics>(mockAnalytics);
+  
+  // Table session for locking
+  const [tableSession, setTableSessionState] = useState<TableSession | null>(() => {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem(TABLE_SESSION_KEY);
+      if (stored) {
+        try {
+          const session = JSON.parse(stored);
+          // Session expires after 24 hours
+          if (Date.now() - session.timestamp < 24 * 60 * 60 * 1000) {
+            return session;
+          }
+          localStorage.removeItem(TABLE_SESSION_KEY);
+        } catch {
+          localStorage.removeItem(TABLE_SESSION_KEY);
+        }
+      }
+    }
+    return null;
+  });
+  
+  // Shop settings (derived from currentShop or defaults)
+  const [shopSettings, setShopSettings] = useState<ShopSettings>({
+    shopName: 'Dai Ko Chiya',
+    description: 'Experience the warmth of authentic Nepali tea culture',
+    numberOfTables: 10,
+    isOpen: true,
+    soundAlerts: true,
+    browserNotifications: false,
+    shopUrl: '',
+  });
   
   // Auth state
   const [user, setUser] = useState<User | null>(null);
@@ -64,27 +116,56 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const [isAdmin, setIsAdmin] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
 
+  // Set table session with localStorage persistence
+  const setTableSession = (session: TableSession | null) => {
+    setTableSessionState(session);
+    if (session) {
+      localStorage.setItem(TABLE_SESSION_KEY, JSON.stringify(session));
+    } else {
+      localStorage.removeItem(TABLE_SESSION_KEY);
+    }
+  };
+
+  const clearTableSession = () => {
+    setTableSessionState(null);
+    localStorage.removeItem(TABLE_SESSION_KEY);
+  };
+
+  // Update shopSettings when currentShop changes
+  useEffect(() => {
+    if (currentShop) {
+      setShopSettings({
+        shopName: currentShop.name,
+        description: currentShop.description || '',
+        numberOfTables: currentShop.numberOfTables,
+        isOpen: currentShop.isOpen,
+        logoUrl: currentShop.logoUrl,
+        soundAlerts: currentShop.soundAlerts,
+        browserNotifications: currentShop.browserNotifications,
+        shopUrl: `${window.location.origin}/shop/${currentShop.slug}/menu`,
+      });
+    }
+  }, [currentShop]);
+
   // Initialize auth
   useEffect(() => {
-    // Set up auth state listener FIRST
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
         setSession(session);
         setUser(session?.user ?? null);
         setAuthLoading(false);
         
-        // Check admin role after auth change
         if (session?.user) {
           setTimeout(() => {
             checkAdminRole(session.user.id);
           }, 0);
         } else {
           setIsAdmin(false);
+          setCurrentShop(null);
         }
       }
     );
 
-    // THEN check for existing session
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
@@ -98,18 +179,42 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     return () => subscription.unsubscribe();
   }, []);
 
-  // Check if user is admin
+  // Check if user is admin and load their shop
   const checkAdminRole = async (userId: string) => {
     try {
       const { data, error } = await supabase
         .from('user_roles')
-        .select('role')
+        .select('role, shop_id')
         .eq('user_id', userId)
         .eq('role', 'admin')
         .maybeSingle();
       
       if (!error && data) {
         setIsAdmin(true);
+        // Load the admin's shop
+        if (data.shop_id) {
+          const { data: shopData } = await supabase
+            .from('shops')
+            .select('*')
+            .eq('id', data.shop_id)
+            .single();
+          
+          if (shopData) {
+            setCurrentShop({
+              id: shopData.id,
+              name: shopData.name,
+              slug: shopData.slug,
+              description: shopData.description || undefined,
+              logoUrl: shopData.logo_url || undefined,
+              numberOfTables: shopData.number_of_tables,
+              isOpen: shopData.is_open,
+              soundAlerts: shopData.sound_alerts,
+              browserNotifications: shopData.browser_notifications,
+              createdAt: new Date(shopData.created_at),
+              updatedAt: new Date(shopData.updated_at),
+            });
+          }
+        }
       } else {
         setIsAdmin(false);
       }
@@ -118,13 +223,57 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  // Fetch menu items
+  // Load shop by slug (for customer menu)
+  const loadShopBySlug = async (slug: string): Promise<Shop | null> => {
+    setLoadingShop(true);
+    try {
+      const { data, error } = await supabase
+        .from('shops')
+        .select('*')
+        .eq('slug', slug)
+        .single();
+      
+      if (error || !data) {
+        setLoadingShop(false);
+        return null;
+      }
+      
+      const shop: Shop = {
+        id: data.id,
+        name: data.name,
+        slug: data.slug,
+        description: data.description || undefined,
+        logoUrl: data.logo_url || undefined,
+        numberOfTables: data.number_of_tables,
+        isOpen: data.is_open,
+        soundAlerts: data.sound_alerts,
+        browserNotifications: data.browser_notifications,
+        createdAt: new Date(data.created_at),
+        updatedAt: new Date(data.updated_at),
+      };
+      
+      setCurrentShop(shop);
+      setLoadingShop(false);
+      return shop;
+    } catch {
+      setLoadingShop(false);
+      return null;
+    }
+  };
+
+  // Fetch menu items for current shop
   useEffect(() => {
     const fetchMenuItems = async () => {
+      if (!currentShop) {
+        setLoadingMenu(false);
+        return;
+      }
+      
       setLoadingMenu(true);
       const { data, error } = await supabase
         .from('menu_items')
         .select('*')
+        .eq('shop_id', currentShop.id)
         .order('created_at', { ascending: false });
       
       if (!error && data) {
@@ -139,25 +288,54 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           isBestSeller: item.is_best_seller,
           isTodaysSpecial: item.is_todays_special,
           discount: item.discount || undefined,
+          shopId: item.shop_id || undefined,
         })));
       }
       setLoadingMenu(false);
     };
 
     fetchMenuItems();
-  }, []);
 
-  // Fetch orders and set up real-time subscription
+    // Set up real-time subscription for menu items
+    if (currentShop) {
+      const channel = supabase
+        .channel('menu-items-realtime')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'menu_items',
+            filter: `shop_id=eq.${currentShop.id}`
+          },
+          () => {
+            fetchMenuItems();
+          }
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    }
+  }, [currentShop]);
+
+  // Fetch orders for current shop
   useEffect(() => {
     const fetchOrders = async () => {
+      if (!currentShop) {
+        setLoadingOrders(false);
+        return;
+      }
+      
       setLoadingOrders(true);
       const { data: ordersData, error: ordersError } = await supabase
         .from('orders')
         .select('*')
+        .eq('shop_id', currentShop.id)
         .order('created_at', { ascending: false });
       
       if (!ordersError && ordersData) {
-        // Fetch order items for each order
         const ordersWithItems = await Promise.all(
           ordersData.map(async (order) => {
             const { data: items } = await supabase
@@ -182,6 +360,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
               notes: order.notes || undefined,
               createdAt: new Date(order.created_at),
               updatedAt: new Date(order.updated_at),
+              shopId: order.shop_id || undefined,
             };
 
             return orderObj;
@@ -195,86 +374,240 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     fetchOrders();
 
     // Set up real-time subscription for orders
-    const channel = supabase
-      .channel('orders-realtime')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'orders'
-        },
-        async (payload) => {
-          console.log('Order change received:', payload);
-          
-          if (payload.eventType === 'INSERT') {
-            const newOrder = payload.new as any;
-            const { data: items } = await supabase
-              .from('order_items')
-              .select('*')
-              .eq('order_id', newOrder.id);
+    if (currentShop) {
+      const channel = supabase
+        .channel('orders-realtime')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'orders',
+            filter: `shop_id=eq.${currentShop.id}`
+          },
+          async (payload) => {
+            console.log('Order change received:', payload);
             
-            const orderItems: OrderItem[] = (items || []).map(item => ({
-              id: item.id,
-              name: item.name,
-              price: Number(item.price),
-              quantity: item.quantity,
-            }));
+            if (payload.eventType === 'INSERT') {
+              const newOrder = payload.new as any;
+              const { data: items } = await supabase
+                .from('order_items')
+                .select('*')
+                .eq('order_id', newOrder.id);
+              
+              const orderItems: OrderItem[] = (items || []).map(item => ({
+                id: item.id,
+                name: item.name,
+                price: Number(item.price),
+                quantity: item.quantity,
+              }));
 
-            const order: Order = {
-              id: newOrder.id,
-              tableNumber: newOrder.table_number,
-              items: orderItems,
-              status: newOrder.status as Order['status'],
-              totalAmount: Number(newOrder.total),
-              customerName: newOrder.customer_name || undefined,
-              notes: newOrder.notes || undefined,
-              createdAt: new Date(newOrder.created_at),
-              updatedAt: new Date(newOrder.updated_at),
-            };
-            
-            setOrders(prev => [order, ...prev.filter(o => o.id !== order.id)]);
-            
-            // Play notification sound for new orders
-            if (shopSettings.soundAlerts) {
-              playNotificationSound();
-            }
-          } else if (payload.eventType === 'UPDATE') {
-            const updatedOrder = payload.new as any;
-            setOrders(prev => 
-              prev.map(o => 
-                o.id === updatedOrder.id 
-                  ? { 
-                      ...o, 
-                      status: updatedOrder.status as Order['status'],
-                      updatedAt: new Date(updatedOrder.updated_at) 
-                    } 
-                  : o
-              )
-            );
-            
-            // Update current order if it's the one being updated
-            if (currentOrder?.id === updatedOrder.id) {
-              setCurrentOrder(prev => 
-                prev ? { 
-                  ...prev, 
-                  status: updatedOrder.status as Order['status'],
-                  updatedAt: new Date(updatedOrder.updated_at) 
-                } : null
+              const order: Order = {
+                id: newOrder.id,
+                tableNumber: newOrder.table_number,
+                items: orderItems,
+                status: newOrder.status as Order['status'],
+                totalAmount: Number(newOrder.total),
+                customerName: newOrder.customer_name || undefined,
+                notes: newOrder.notes || undefined,
+                createdAt: new Date(newOrder.created_at),
+                updatedAt: new Date(newOrder.updated_at),
+                shopId: newOrder.shop_id || undefined,
+              };
+              
+              setOrders(prev => [order, ...prev.filter(o => o.id !== order.id)]);
+              
+              if (shopSettings.soundAlerts) {
+                playNotificationSound();
+              }
+            } else if (payload.eventType === 'UPDATE') {
+              const updatedOrder = payload.new as any;
+              setOrders(prev => 
+                prev.map(o => 
+                  o.id === updatedOrder.id 
+                    ? { 
+                        ...o, 
+                        status: updatedOrder.status as Order['status'],
+                        updatedAt: new Date(updatedOrder.updated_at) 
+                      } 
+                    : o
+                )
               );
+              
+              if (currentOrder?.id === updatedOrder.id) {
+                setCurrentOrder(prev => 
+                  prev ? { 
+                    ...prev, 
+                    status: updatedOrder.status as Order['status'],
+                    updatedAt: new Date(updatedOrder.updated_at) 
+                  } : null
+                );
+              }
+            } else if (payload.eventType === 'DELETE') {
+              const deletedOrder = payload.old as any;
+              setOrders(prev => prev.filter(o => o.id !== deletedOrder.id));
             }
-          } else if (payload.eventType === 'DELETE') {
-            const deletedOrder = payload.old as any;
-            setOrders(prev => prev.filter(o => o.id !== deletedOrder.id));
           }
-        }
-      )
-      .subscribe();
+        )
+        .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [shopSettings.soundAlerts, currentOrder?.id]);
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    }
+  }, [currentShop, shopSettings.soundAlerts, currentOrder?.id]);
+
+  // Menu CRUD operations
+  const addMenuItem = async (item: Omit<MenuItem, 'id'>): Promise<MenuItem | null> => {
+    if (!currentShop) return null;
+    
+    try {
+      const { data, error } = await supabase
+        .from('menu_items')
+        .insert({
+          name: item.name,
+          description: item.description,
+          price: item.price,
+          category: item.category,
+          image: item.image,
+          discount: item.discount || 0,
+          is_best_seller: item.isBestSeller || false,
+          is_todays_special: item.isTodaysSpecial || false,
+          is_available: item.isAvailable,
+          shop_id: currentShop.id,
+        })
+        .select()
+        .single();
+      
+      if (error) throw error;
+      
+      const newItem: MenuItem = {
+        id: data.id,
+        name: data.name,
+        price: Number(data.price),
+        description: data.description || '',
+        category: data.category as MenuItem['category'],
+        image: data.image || undefined,
+        isAvailable: data.is_available,
+        isBestSeller: data.is_best_seller,
+        isTodaysSpecial: data.is_todays_special,
+        discount: data.discount || undefined,
+        shopId: data.shop_id || undefined,
+      };
+      
+      setMenuItems(prev => [newItem, ...prev]);
+      return newItem;
+    } catch (error) {
+      console.error('Error adding menu item:', error);
+      return null;
+    }
+  };
+
+  const updateMenuItem = async (id: string, item: Partial<MenuItem>): Promise<boolean> => {
+    try {
+      const updateData: any = {};
+      if (item.name !== undefined) updateData.name = item.name;
+      if (item.description !== undefined) updateData.description = item.description;
+      if (item.price !== undefined) updateData.price = item.price;
+      if (item.category !== undefined) updateData.category = item.category;
+      if (item.image !== undefined) updateData.image = item.image;
+      if (item.discount !== undefined) updateData.discount = item.discount;
+      if (item.isBestSeller !== undefined) updateData.is_best_seller = item.isBestSeller;
+      if (item.isTodaysSpecial !== undefined) updateData.is_todays_special = item.isTodaysSpecial;
+      if (item.isAvailable !== undefined) updateData.is_available = item.isAvailable;
+      
+      const { error } = await supabase
+        .from('menu_items')
+        .update(updateData)
+        .eq('id', id);
+      
+      if (error) throw error;
+      
+      setMenuItems(prev => 
+        prev.map(menuItem => 
+          menuItem.id === id ? { ...menuItem, ...item } : menuItem
+        )
+      );
+      return true;
+    } catch (error) {
+      console.error('Error updating menu item:', error);
+      return false;
+    }
+  };
+
+  const deleteMenuItem = async (id: string): Promise<boolean> => {
+    try {
+      const { error } = await supabase
+        .from('menu_items')
+        .delete()
+        .eq('id', id);
+      
+      if (error) throw error;
+      
+      setMenuItems(prev => prev.filter(item => item.id !== id));
+      return true;
+    } catch (error) {
+      console.error('Error deleting menu item:', error);
+      return false;
+    }
+  };
+
+  // Shop settings update
+  const updateShopSettings = async (settings: Partial<Shop>): Promise<boolean> => {
+    if (!currentShop) return false;
+    
+    try {
+      const updateData: any = {};
+      if (settings.name !== undefined) updateData.name = settings.name;
+      if (settings.description !== undefined) updateData.description = settings.description;
+      if (settings.numberOfTables !== undefined) updateData.number_of_tables = settings.numberOfTables;
+      if (settings.isOpen !== undefined) updateData.is_open = settings.isOpen;
+      if (settings.logoUrl !== undefined) updateData.logo_url = settings.logoUrl;
+      if (settings.soundAlerts !== undefined) updateData.sound_alerts = settings.soundAlerts;
+      if (settings.browserNotifications !== undefined) updateData.browser_notifications = settings.browserNotifications;
+      
+      const { error } = await supabase
+        .from('shops')
+        .update(updateData)
+        .eq('id', currentShop.id);
+      
+      if (error) throw error;
+      
+      setCurrentShop(prev => prev ? { ...prev, ...settings } : null);
+      return true;
+    } catch (error) {
+      console.error('Error updating shop settings:', error);
+      return false;
+    }
+  };
+
+  // Upload shop logo
+  const uploadShopLogo = async (file: File): Promise<string | null> => {
+    if (!currentShop) return null;
+    
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${currentShop.id}/logo.${fileExt}`;
+      
+      const { error: uploadError } = await supabase.storage
+        .from('shop-logos')
+        .upload(fileName, file, { upsert: true });
+      
+      if (uploadError) throw uploadError;
+      
+      const { data: { publicUrl } } = supabase.storage
+        .from('shop-logos')
+        .getPublicUrl(fileName);
+      
+      // Update shop with new logo URL
+      await updateShopSettings({ logoUrl: publicUrl });
+      
+      return publicUrl;
+    } catch (error) {
+      console.error('Error uploading logo:', error);
+      return null;
+    }
+  };
 
   const addToCart = (item: MenuItem) => {
     setCart(prev => {
@@ -305,7 +638,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const clearCart = () => setCart([]);
 
   const createOrder = async (tableNumber: number): Promise<Order | null> => {
-    if (cart.length === 0) return null;
+    if (cart.length === 0 || !currentShop) return null;
     
     const totalAmount = cart.reduce((sum, item) => {
       const price = item.discount 
@@ -315,20 +648,19 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }, 0);
 
     try {
-      // Insert order
       const { data: orderData, error: orderError } = await supabase
         .from('orders')
         .insert({
           table_number: tableNumber,
           total: totalAmount,
           status: 'pending',
+          shop_id: currentShop.id,
         })
         .select()
         .single();
 
       if (orderError) throw orderError;
 
-      // Insert order items
       const orderItems = cart.map(item => ({
         order_id: orderData.id,
         menu_item_id: item.id,
@@ -358,6 +690,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         totalAmount,
         createdAt: new Date(orderData.created_at),
         updatedAt: new Date(orderData.updated_at),
+        shopId: currentShop.id,
       };
 
       setCurrentOrder(newOrder);
@@ -383,7 +716,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
-  const login = async (email: string, password: string): Promise<{ error: string | null }> => {
+  const login = async (email: string, password: string): Promise<{ error: string | null; shopSlug?: string }> => {
     const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,
@@ -393,11 +726,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       return { error: error.message };
     }
 
-    // Check if user is admin
     if (data.user) {
       const { data: roleData, error: roleError } = await supabase
         .from('user_roles')
-        .select('role')
+        .select('role, shop_id')
         .eq('user_id', data.user.id)
         .eq('role', 'admin')
         .maybeSingle();
@@ -408,6 +740,32 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       }
 
       setIsAdmin(true);
+      
+      // Load the admin's shop
+      if (roleData.shop_id) {
+        const { data: shopData } = await supabase
+          .from('shops')
+          .select('*')
+          .eq('id', roleData.shop_id)
+          .single();
+        
+        if (shopData) {
+          setCurrentShop({
+            id: shopData.id,
+            name: shopData.name,
+            slug: shopData.slug,
+            description: shopData.description || undefined,
+            logoUrl: shopData.logo_url || undefined,
+            numberOfTables: shopData.number_of_tables,
+            isOpen: shopData.is_open,
+            soundAlerts: shopData.sound_alerts,
+            browserNotifications: shopData.browser_notifications,
+            createdAt: new Date(shopData.created_at),
+            updatedAt: new Date(shopData.updated_at),
+          });
+          return { error: null, shopSlug: shopData.slug };
+        }
+      }
     }
 
     return { error: null };
@@ -434,13 +792,20 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const logout = async () => {
     await supabase.auth.signOut();
     setIsAdmin(false);
+    setCurrentShop(null);
   };
 
   return (
     <AppContext.Provider value={{
+      currentShop,
+      setCurrentShop,
+      loadingShop,
       menuItems,
       setMenuItems,
       loadingMenu,
+      addMenuItem,
+      updateMenuItem,
+      deleteMenuItem,
       cart,
       addToCart,
       removeFromCart,
@@ -453,8 +818,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       loadingOrders,
       currentOrder,
       setCurrentOrder,
+      tableSession,
+      setTableSession,
+      clearTableSession,
       shopSettings,
       setShopSettings,
+      updateShopSettings,
+      uploadShopLogo,
       analytics,
       user,
       session,
@@ -464,6 +834,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       login,
       signup,
       logout,
+      loadShopBySlug,
     }}>
       {children}
     </AppContext.Provider>

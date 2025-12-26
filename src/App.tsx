@@ -27,9 +27,12 @@ const App = () => (
         <Sonner />
         <BrowserRouter>
           <Routes>
-            {/* Customer Routes */}
-            <Route path="/" element={<Navigate to="/menu" replace />} />
+            {/* Customer Routes - with shop slug */}
+            <Route path="/shop/:shopSlug/menu" element={<CustomerMenu />} />
+            
+            {/* Legacy route - redirect to first shop or show error */}
             <Route path="/menu" element={<CustomerMenu />} />
+            <Route path="/" element={<Navigate to="/menu" replace />} />
             
             {/* Auth Route */}
             <Route path="/login" element={<Login />} />
